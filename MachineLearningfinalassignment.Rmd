@@ -1,0 +1,239 @@
+---
+title: "Final Assignment Machine Learning"
+author: "Neli Dilkova-Gnoyke"
+date: "27 Juni 2019"
+output: html_document
+---
+
+## Human Activity Recognition Assignment 
+The assignment is based on HAR, the Human Activity Recognition Assignment database created by Ugulino, W. et. al.
+Specifically, we are using the Weight Lifting Exercises dataset. This dataset is licensed under the Creative Commons license (CC BY-SA).
+
+
+```{r testTrain, echo = FALSE, warning = FALSE, message = FALSE}
+
+library(AppliedPredictiveModeling)
+library(caret)
+library(ElemStatLearn)
+library(pgmm)
+library(rpart)
+library(gbm)
+library(lubridate)
+library(forecast)
+library(e1071)
+library(hydroGOF)
+library(nnet)
+
+testing <- read.csv("C:\\Knowledge\\Desktop old 20180217\\Programing\\Coursera Practical Machine Learning 2019\\pml-testing.csv")
+
+training <- read.csv("C:\\Knowledge\\Desktop old 20180217\\Programing\\Coursera Practical Machine Learning 2019\\pml-training.csv")
+#head(training)
+#summary(training)
+
+```
+
+## Aim of the assignment
+
+The aim is to predict the manner of exercise executions, stored in the variable "classe". 
+
+
+## Model description
+
+The dependent variable is categorical. Possibilities to predict the dependent variable are multinomial regression, random forest, naiive bayes.
+
+I tried and compared two models: multinomial regression and random forest.
+
+
+The original training dataset has the dimensions 19622 x 160.
+
+
+
+### How was the model built
+
+
+As the testing dataset does not include the variable "classe", I split the training dataset into training and testing part. The Model was built using the new training part, which comprises of 70% of the original observations in the training dataset and 13737 observations. 
+
+Additionally, to assess the out of sample prediction error (out of bag error) especially for the Random Forest model, I used 10-fold cross validation. 
+
+The multinomial model and the RF model were both built in the following way:
+
+(@) **Preprocessing:**  
+
+All variables with a share of NA larger than 90%, or variance = 0 were removed. Categorical variables which had the same value in more than 90% of all cases were removed.
+
+As the aim is to predict the quality of execution based on the execution parameters, all variables which were not connected to execution were removed as well (name of the participant, timestamp, window categorical and numeric). The dataset included some aggregations like means and standard deviations per participant. They were also removed. 
+
+After this cleaning, the dataset included 53 variables. 
+
+Then, I used centering and standardization to bring all independent variables on a similar scale.
+
+
+(@) **Variable selection:**
+
+I calculated the bivariate correlation matrix of all standardized independent variables. In the next step, I removed the variables which correlated perfectly or almost perfectly (R >= 0.9) with another variable. 
+
+In the following graph, strong correlations are indicated in blue and pink color:
+
+```{r Build training and validation set, echo = FALSE}
+inTrain <- createDataPartition(y=training$classe,
+                              p=0.7, list=FALSE)
+
+training <- training[inTrain,]
+  
+testing.internal <- training[-inTrain,]  
+```
+
+
+```{r Preprocessing, echo=FALSE}
+
+# remove vars which are NA throughout
+na.vars <- list()
+na.vars <- sapply(training, function(x) length(which(is.na(x))))
+
+na.vars.share <- unlist(na.vars)/nrow(training)
+
+training.red <- training[,-which(na.vars.share > 0.9)]
+
+# remove the first column with sequential ids
+training.red <- training.red[,-1]
+
+#plotlist <- list()
+
+#for(i in colnames(training)){
+#  plotlist[[i]] <- qplot(classe,i, data = training, fill = classe, geom = c("boxplot", "jitter") )
+#}
+#
+#lapply(plotlist, function(x) print(x))
+
+# remove variables with too low variance
+# The variables "kurtosis" and "skewness" are summaries of other variables and only include a handful of values. Remove
+
+training.red <- training.red[ , -grep("kurtosis", colnames(training.red))]
+training.red <- training.red[ , -grep("skewness", colnames(training.red))]
+training.red <- training.red[ , -grep("min", colnames(training.red))]
+training.red <- training.red[ , -grep("max", colnames(training.red))]
+training.red <- training.red[ , -grep("amplitude", colnames(training.red))]
+
+# compute var or share of unique values for each variable
+var.val <- list()
+
+for(i in 1: ncol(training.red)){
+  if(is.numeric(training.red[,i]) == TRUE){
+    var.val[[i]] <- var(training.red[,i])
+  }else {
+    var.val[[i]] <- prop.table(table(unique(training.red[,i])))
+  }
+  
+}
+
+# The theory behind the model is to predict the classe using the info on the technique which respondents used. Therefore, I clean the user name and all time stamps, also the identifiers "new window" and "num window.
+
+training.red <- training.red[,-c(1:6)]
+
+# center and scale in pre processing
+
+preObj <- preProcess(training.red,-ncol(training.red), method = c("center", "scale"))
+trainClasse <- predict(preObj, training.red)$classe
+
+dat_preProc <- predict(preObj, training.red)
+
+
+library(nnet)
+
+# define train control method
+train.control <- trainControl(method = "cv", number = 10)
+
+
+# Compute correlation pairwise
+ 
+M <- as.matrix(cor(dat_preProc[,-ncol(dat_preProc)])) # get correlations
+
+library('lattice') #package corrplot
+
+print(levelplot(M)) #plot matrix
+
+
+
+```
+
+```{r MNL model, echo=FALSE, results = 'hide'}
+
+#Magnet.Arm variables are correlated. Remove one of them
+# Remove gyros_arm_x because it is almost perfectly correlated with gyros_arm_y
+# Remove tot_accel_belt because it is strongly correlated with all other accel_belt variables
+# Remove magnet_arm_y, because it correlates strongly with the other two magnet_arm variables
+
+training.red.1 <- training.red[,-c(4, 18, 25)]
+
+
+mnlMod <- train(form = classe ~ ., data = training.red.1, preProcess = c("center", 
+    "scale"), method = "multinom", trControl = train.control)
+
+
+# The multinom package does not include p-value calculation for the regression coefficients, so we calculate p-values using Wald tests (here z-tests).
+z <- summary(mnlMod)$coefficients/summary(mnlMod)$standard.errors
+
+
+p <- (1 - pnorm(abs(z), 0, 1)) * 2
+
+
+# No removal of variables based on p-values
+
+
+
+
+```
+
+(@) **Selection of a final model**
+
+The final model I chose was the fandom forest, because it produced higher accuracy internally and in predicting the testing dataset.
+
+Here is the summary of the multinomial model:
+
+```{r, echo = FALSE}
+pred1 <- predict(mnlMod,testing.internal)
+
+print(confusionMatrix(pred1, testing.internal$classe))
+```
+
+
+And here is the summary of the RF model:
+
+```{r, FinalModel, echo = FALSE}
+
+mod <- train(classe~., method = "rf", data = training.red.1, preProcess=c("center","scale"), trControl = train.control, prox = TRUE )
+
+pred2 <- predict(mod,testing.internal)
+
+```
+
+
+
+```{r, FinalModel summary, echo = FALSE}
+
+print(confusionMatrix(pred2, testing.internal$classe))
+
+print(summary(mod$finalModel$err.rate))
+
+
+
+```
+
+
+## Prediction of 20 test cases
+
+The prediction of 20 test cases with each model produced folowing results. The First series is the MNL prediction, the second the RF prediciton:
+
+```{r, echo = FALSE}
+pred.mnl.testing <- predict(mnlMod,testing)
+
+print(pred.mnl.testing)
+
+
+pred.rf.testing <- predict(mod,testing)
+
+print(pred.rf.testing)
+
+```
+
+
